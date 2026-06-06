@@ -3,9 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>DISCO 02.0 - Pencak Silat (Firebase)</title>
+    <title>DISCO 02.0 - Pencak Silat</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+    
+    <!-- Firebase Legacy SDK (v8) -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap');
         body { font-family: 'Montserrat', sans-serif; background-color: #f8fafc; color: #1e293b; margin: 0; height: 100vh; width: 100vw; overflow: hidden; }
@@ -332,24 +337,8 @@
 
     <audio id="snd-hit" src="https://actions.google.com/sounds/v1/button/simple_stop_button.ogg"></audio>
 
-    <!-- FIREBASE MODULE -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-        import { getDatabase, ref, set, onValue, update } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-
-        const firebaseConfig = {
-            apiKey: "AIzaSyB1MgK3pd8d_rSuybwNYF1Xpi_ASy4TzgE",
-            authDomain: "digital-scoring-f5181.firebaseapp.com",
-            projectId: "digital-scoring-f5181",
-            storageBucket: "digital-scoring-f5181.firebasestorage.app",
-            messagingSenderId: "824919823278",
-            appId: "1:824919823278:web:5e70122dbf2c4dddf06e3f"
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const db = getDatabase(app);
-        const stateRef = ref(db, 'pencak_state');
-
+    <script>
+        const API_URL = "http://localhost:3000/api/state";
         const INITIAL_STATE = {
             event: "Pencak Silat", timer: 120, babak: 1, isRunning: false,
             matches: Array.from({length: 1000}, (_, i) => ({ 
@@ -365,34 +354,108 @@
         let state = INITIAL_STATE;
         let localJuri = 0, tInt, sekrePage = 0;
 
-        // Firebase Sync Logic
-        onValue(stateRef, (snapshot) => {
-            const data = snapshot.val();
-            if (data) {
-                // Perbaikan Timer: Jika lokal sedang running dan device ini adalah dewan, jangan overwrite timer lokal dengan yang lama dari DB
-                // Namun untuk sinkronisasi monitor, kita pakai state dari DB.
-                const wasRunning = state.isRunning;
-                state = data;
-                updateUI();
-            } else {
-                set(stateRef, INITIAL_STATE);
-            }
-        });
+        async function fetchState() {
+            try {
+                const response = await fetch(API_URL);
+                if (response.ok) {
+                    const data = await response.json();
+                    state = data;
+                    updateUI();
+                }
+            } catch (err) { console.error("Koneksi server terputus..."); }
+        }
 
-        // Global functions exposed to window for onclick handlers
-        window.broadcast = () => set(stateRef, state);
-        
-        window.changeScreen = (id) => {
+        async function broadcast() {
+            updateUI(); 
+            try {
+                await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(state)
+                });
+            } catch (err) { console.error("Gagal mengirim data..."); }
+        }
+
+        setInterval(fetchState, 500);
+
+        function changeScreen(id) { 
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active')); 
             document.getElementById('screen-'+id).classList.add('active'); 
             if(id === 'sekretaris') renderSekretarisInputs(); 
             if(id === 'skema') populateSkemaFilters();
-        };
+        }
+        
+        function slideSekre(dir) { sekrePage = Math.max(0, Math.min(99, sekrePage + dir)); renderSekretarisInputs(); }
 
-        window.slideSekre = (dir) => { 
-            sekrePage = Math.max(0, Math.min(99, sekrePage + dir)); 
-            renderSekretarisInputs(); 
-        };
+        function populateSkemaFilters() {
+            const kFilter = document.getElementById('skema-kelas-filter');
+            kFilter.innerHTML = '<option value="">PILIH KELAS</option>';
+            const uniqueClasses = [...new Set(state.matches.filter(m => m.m !== "" || m.b !== "").map(m => `${m.cat} ${m.gender} KELAS ${m.kelas}`))];
+            uniqueClasses.sort().forEach(q => kFilter.innerHTML += `<option value="${q}">${q}</option>`);
+            renderSkema();
+        }
+
+        function renderSkema() {
+            const container = document.getElementById('bracket-view');
+            const classFilter = document.getElementById('skema-kelas-filter').value;
+            const faseFilter = document.getElementById('skema-fase-filter').value;
+            container.innerHTML = "";
+            
+            if(!classFilter) {
+                container.innerHTML = "<div class='flex flex-col items-center justify-center w-full h-full opacity-30'><i class='fas fa-project-diagram text-6xl mb-4'></i><p class='font-black uppercase text-xs'>Pilih Kelas untuk melihat skema</p></div>";
+                return;
+            }
+
+            const phases = ["PENYISIHAN", "PEREMPAT FINAL", "SEMI FINAL", "FINAL"];
+            const displayPhases = faseFilter === "ALL" ? phases : [faseFilter];
+
+            displayPhases.forEach((phase, pIdx) => {
+                const matches = state.matches.filter(m => 
+                    (m.m !== "" || m.b !== "") && 
+                    (`${m.cat} ${m.gender} KELAS ${m.kelas}` === classFilter) &&
+                    (m.fase === phase)
+                );
+
+                if(matches.length > 0) {
+                    const column = document.createElement('div');
+                    column.className = "bracket-column";
+                    column.innerHTML = `<h3 class="text-center font-black text-[10px] bg-slate-900 text-white py-2 rounded-xl mb-4 italic tracking-widest">${phase}</h3>`;
+                    
+                    matches.forEach(m => {
+                        const isActive = (state.idx + 1 === m.p);
+                        let winnerSudut = m.winner;
+                        
+                        if(isActive) {
+                            const tm = calculateTotal('merah'), tb = calculateTotal('biru');
+                            if(typeof tm === 'number' && typeof tb === 'number' && (tm > 0 || tb > 0)) {
+                                winnerSudut = tm > tb ? 'merah' : (tb > tm ? 'biru' : null);
+                            }
+                        }
+
+                        const box = document.createElement('div');
+                        box.className = `match-box ${isActive ? 'active-match' : ''}`;
+                        box.innerHTML = `
+                            <div class="flex justify-between items-center mb-2 border-b border-slate-100 pb-1">
+                                <span class="text-[7px] font-black bg-slate-100 text-slate-500 px-1.5 rounded">P-${m.p}</span>
+                                ${isActive ? '<span class="animate-pulse text-[6px] font-black text-emerald-500">LIVE</span>' : ''}
+                            </div>
+                            <div class="match-atlet sudut-merah-bg ${winnerSudut === 'biru' ? 'is-loser' : (winnerSudut === 'merah' ? 'is-winner' : '')}">
+                                <span class="atlet-name">${m.m || '?'}</span>
+                                <span class="atlet-kont">${m.km || '-'}</span>
+                            </div>
+                            <div class="text-[6px] font-black text-center text-slate-200 my-1 italic">VS</div>
+                            <div class="match-atlet sudut-biru-bg ${winnerSudut === 'merah' ? 'is-loser' : (winnerSudut === 'biru' ? 'is-winner' : '')}">
+                                <span class="atlet-name">${m.b || '?'}</span>
+                                <span class="atlet-kont">${m.kb || '-'}</span>
+                            </div>
+                            ${faseFilter === "ALL" && phase !== "FINAL" ? '<div class="connector-line"></div>' : ''}
+                        `;
+                        column.appendChild(box);
+                    });
+                    container.appendChild(column);
+                }
+            });
+        }
 
         function renderSekretarisInputs() {
             const start = sekrePage * 10; const end = start + 10;
@@ -410,7 +473,7 @@
                             <option value="REMAJA" ${m.cat==='REMAJA'?'selected':''}>REMAJA</option>
                             <option value="DEWASA" ${m.cat==='DEWASA'?'selected':''}>DEWASA</option>
                         </select>
-                        <input id="in-kls-${i}" type="text" value="${m.kelas}" class="border p-1 rounded-lg text-[7px] font-bold uppercase text-center">
+                        <input id="in-kls-${i}" type="text" value="${m.kelas}" placeholder="KLS" class="border p-1 rounded-lg text-[7px] font-bold uppercase text-center">
                         <select id="in-gen-${i}" class="border p-1 rounded-lg text-[7px] font-bold">
                             <option value="PUTRA" ${m.gender==='PUTRA'?'selected':''}>PUTRA</option>
                             <option value="PUTRI" ${m.gender==='PUTRI'?'selected':''}>PUTRI</option>
@@ -422,14 +485,26 @@
                             <option value="FINAL" ${m.fase==='FINAL'?'selected':''}>FINAL</option>
                         </select>
                     </div>
+                    <div class="grid grid-cols-2 gap-1 mt-1">
+                        <select id="in-rnd-${i}" class="border p-1 rounded-lg text-[7px] font-bold">
+                            <option value="1" ${m.rounds==1?'selected':''}>1 BABAK</option>
+                            <option value="2" ${m.rounds==2?'selected':''}>2 BABAK</option>
+                            <option value="3" ${m.rounds==3?'selected':''}>3 BABAK</option>
+                        </select>
+                        <select id="in-dur-${i}" class="border p-1 rounded-lg text-[7px] font-bold">
+                            <option value="90" ${m.duration==90?'selected':''}>1.5 Menit</option>
+                            <option value="120" ${m.duration==120?'selected':''}>2 Menit</option>
+                            <option value="180" ${m.duration==180?'selected':''}>3 Menit</option>
+                        </select>
+                    </div>
                     <div class="grid grid-cols-2 gap-2 mt-2">
-                        <div class="p-2 bg-red-50 border border-red-200 rounded-xl space-y-1">
-                            <input id="in-m-n-${i}" list="atlet-list" type="text" value="${m.m}" placeholder="NAMA MERAH" class="w-full bg-transparent text-[8px] font-black uppercase outline-none">
-                            <input id="in-m-k-${i}" type="text" value="${m.km}" placeholder="KONTINGEN" class="w-full bg-transparent text-[7px] font-bold uppercase outline-none">
+                        <div class="space-y-1">
+                            <input id="in-m-n-${i}" list="atlet-list" type="text" value="${m.m}" placeholder="NAMA MERAH" class="w-full border border-red-200 p-2 rounded-lg text-[8px] font-black uppercase">
+                            <input id="in-m-k-${i}" type="text" value="${m.km}" placeholder="KONTINGEN" class="w-full border p-1 rounded-lg text-[7px] font-bold uppercase">
                         </div>
-                        <div class="p-2 bg-blue-50 border border-blue-200 rounded-xl space-y-1">
-                            <input id="in-b-n-${i}" list="atlet-list" type="text" value="${m.b}" placeholder="NAMA BIRU" class="w-full bg-transparent text-[8px] font-black uppercase outline-none">
-                            <input id="in-b-k-${i}" type="text" value="${m.kb}" placeholder="KONTINGEN" class="w-full bg-transparent text-[7px] font-bold uppercase outline-none">
+                        <div class="space-y-1">
+                            <input id="in-b-n-${i}" list="atlet-list" type="text" value="${m.b}" placeholder="NAMA BIRU" class="w-full border border-blue-200 p-2 rounded-lg text-[8px] font-black uppercase">
+                            <input id="in-b-k-${i}" type="text" value="${m.kb}" placeholder="KONTINGEN" class="w-full border p-1 rounded-lg text-[7px] font-bold uppercase">
                         </div>
                     </div>
                 </div>`;
@@ -437,236 +512,215 @@
             renderBaganTable();
         }
 
-        window.saveSekreData = () => {
+        function saveSekreData() { 
             const start = sekrePage * 10; const end = start + 10; 
             for(let i = start; i < end; i++) { 
                 state.matches[i] = { 
-                    ...state.matches[i],
                     p: i + 1, 
                     cat: document.getElementById(`in-cat-${i}`).value, 
                     kelas: document.getElementById(`in-kls-${i}`).value, 
                     gender: document.getElementById(`in-gen-${i}`).value, 
                     fase: document.getElementById(`in-fas-${i}`).value, 
+                    rounds: parseInt(document.getElementById(`in-rnd-${i}`).value), 
+                    duration: parseInt(document.getElementById(`in-dur-${i}`).value), 
                     m: document.getElementById(`in-m-n-${i}`).value, 
                     km: document.getElementById(`in-m-k-${i}`).value, 
                     b: document.getElementById(`in-b-n-${i}`).value, 
-                    kb: document.getElementById(`in-b-k-${i}`).value
+                    kb: document.getElementById(`in-b-k-${i}`).value,
+                    winner: state.matches[i].winner
                 }; 
             } 
-            const ani = document.getElementById('save-ani'); ani.classList.add('show'); setTimeout(() => ani.classList.remove('show'), 2000); 
-            window.broadcast(); 
-        };
+            const ani = document.getElementById('save-ani'); ani.classList.add('show'); setTimeout(() => ani.classList.remove('show'), 2000); broadcast(); 
+        }
 
         function renderBaganTable() { 
             const tbody = document.getElementById('bagan-table-body'); tbody.innerHTML = ""; 
             state.matches.forEach((m, idx) => { 
                 if(m.m !== "" || m.b !== "") { 
-                    tbody.innerHTML += `<tr class="border-b"><td class="p-2 font-bold">${m.p}</td><td class="p-2"><div class="text-red-600 font-bold">${m.m} (${m.km})</div><div class="text-blue-600 font-bold">${m.b} (${m.kb})</div></td><td class="p-2 text-[7px] font-bold">${m.kelas} ${m.cat}</td><td class="p-2 text-center">---</td><td class="p-2 text-center"><button onclick="editMatch(${idx})" class="text-blue-500 mr-2"><i class="fas fa-edit"></i></button><button onclick="deleteMatch(${idx})" class="text-red-500"><i class="fas fa-trash"></i></button></td></tr>`; 
+                    tbody.innerHTML += `
+                    <tr class="border-b">
+                        <td class="p-2 font-bold">${m.p}</td>
+                        <td class="p-2">
+                            <div class="text-red-600 font-bold">${m.m} <span class="text-gray-400">(${m.km})</span></div>
+                            <div class="text-blue-600 font-bold">${m.b} <span class="text-gray-400">(${m.kb})</span></div>
+                        </td>
+                        <td class="p-2 text-[7px] font-bold">${m.kelas} ${m.cat} ${m.gender}<br><span class="text-purple-600">${m.fase}</span></td>
+                        <td class="p-2 text-center text-[7px]">${m.rounds}B / ${m.duration/60}M</td>
+                        <td class="p-2 text-center">
+                            <button onclick="editMatch(${idx})" class="text-blue-500 mr-2"><i class="fas fa-edit"></i></button>
+                            <button onclick="deleteMatch(${idx})" class="text-red-500"><i class="fas fa-trash"></i></button>
+                        </td>
+                    </tr>`; 
                 } 
             }); 
         }
 
-        window.editMatch = (i) => { sekrePage = Math.floor(i / 10); renderSekretarisInputs(); };
-        window.deleteMatch = (i) => { if(confirm("Hapus?")) { state.matches[i] = INITIAL_STATE.matches[i]; window.broadcast(); } };
+        function editMatch(i) { sekrePage = Math.floor(i / 10); renderSekretarisInputs(); }
+        function deleteMatch(i) { if(confirm("Hapus?")) { state.matches[i] = { p: i+1, m: "", b: "", km: "", kb: "", cat: "USIA DINI", kelas: "A", gender: "PUTRA", fase: "PENYISIHAN", rounds: 3, duration: 120, winner: null }; broadcast(); } }
+        function selectMatchPrompt() { let p = prompt("Masukkan Nomor Partai (1-1000):"); if (p) { let idx = parseInt(p) - 1; if (idx >= 0 && idx < 1000) { state.idx = idx; const m = state.matches[idx]; state.timer = m.duration || 120; state.babak = 1; state.isRunning = false; clearInterval(tInt); broadcast(); } else { alert("Partai tidak ditemukan."); } } }
+        function timerCtrl(cmd) { if(cmd === 'start') { if(!state.isRunning) { state.isRunning = true; tInt = setInterval(() => { if(state.timer > 0) { state.timer--; broadcast(); } else { timerCtrl('stop'); } }, 1000); } } else if(cmd === 'stop') { state.isRunning = false; clearInterval(tInt); } else if(cmd === 'reset') { const m = state.matches[state.idx]; state.timer = m.duration || 120; state.isRunning = false; clearInterval(tInt); } broadcast(); }
+        function setRound(n) { const m = state.matches[state.idx]; state.babak = n; state.timer = m.duration || 120; state.isRunning = false; clearInterval(tInt); broadcast(); }
+        function openSelesaiModal() { document.getElementById('modal-confirm').style.display = 'flex'; }
+        
+        function confirmSelesai(ans) { 
+            if(ans) { 
+                const tm = calculateTotal('merah'), tb = calculateTotal('biru'), m = state.matches[state.idx]; 
+                const wSudut = (typeof tm === 'string' || tb > tm) ? 'BIRU' : (typeof tb === 'string' || tm > tb) ? 'MERAH' : 'DRAW'; 
+                state.matches[state.idx].winner = wSudut.toLowerCase();
+                document.getElementById('win-partai').innerText = `PARTAI ${m.p} / ${m.fase}`; 
+                document.getElementById('win-nama').innerText = (wSudut === 'MERAH') ? m.m : (wSudut === 'BIRU') ? m.b : "DRAW"; 
+                document.getElementById('win-kontingen').innerText = (wSudut === 'MERAH') ? m.km : (wSudut === 'BIRU') ? m.kb : "-"; 
+                document.getElementById('win-sudut').innerText = "SUDUT " + wSudut; 
+                document.getElementById('win-poin').innerText = (wSudut === 'MERAH') ? tm : (wSudut === 'BIRU') ? tb : "-"; 
+                document.getElementById('winner-card').className = `p-8 rounded-[3rem] w-full max-w-sm shadow-2xl animate-glow mb-6 ` + (wSudut==='MERAH'?'sudut-merah-bg':wSudut==='BIRU'?'sudut-biru-bg':'bg-slate-700'); 
+                document.getElementById('winner-notif').style.display = 'flex'; 
+            } 
+            document.getElementById('modal-confirm').style.display = 'none'; 
+        }
 
-        window.populateSkemaFilters = () => {
-            const kFilter = document.getElementById('skema-kelas-filter');
-            kFilter.innerHTML = '<option value="">PILIH KELAS</option>';
-            const uniqueClasses = [...new Set(state.matches.filter(m => m.m || m.b).map(m => `${m.cat} ${m.gender} KELAS ${m.kelas}`))];
-            uniqueClasses.sort().forEach(q => kFilter.innerHTML += `<option value="${q}">${q}</option>`);
-            window.renderSkema();
-        };
+        function closeWinnerNotif() { 
+            document.getElementById('winner-notif').style.display = 'none'; 
+            state.merah = { juri:{j1:[0,0,0],j2:[0,0,0],j3:[0,0,0]}, penHistory:[], jat:0, dis:false, history:{j1:[],j2:[],j3:[]} }; 
+            state.biru = { juri:{j1:[0,0,0],j2:[0,0,0],j3:[0,0,0]}, penHistory:[], jat:0, dis:false, history:{j1:[],j2:[],j3:[]} }; 
+            state.babak = 1; const m = state.matches[state.idx]; state.timer = m.duration || 120; state.isRunning = false; 
+            broadcast(); 
+        }
 
-        window.renderSkema = () => {
-            const container = document.getElementById('bracket-view');
-            const classFilter = document.getElementById('skema-kelas-filter').value;
-            const faseFilter = document.getElementById('skema-fase-filter').value;
-            container.innerHTML = "";
-            if(!classFilter) { container.innerHTML = "<p class='m-auto opacity-30'>PILIH KELAS</p>"; return; }
-
-            const phases = ["PENYISIHAN", "PEREMPAT FINAL", "SEMI FINAL", "FINAL"];
-            const displayPhases = faseFilter === "ALL" ? phases : [faseFilter];
-
-            displayPhases.forEach(phase => {
-                const matches = state.matches.filter(m => (m.m || m.b) && (`${m.cat} ${m.gender} KELAS ${m.kelas}` === classFilter) && (m.fase === phase));
-                if(matches.length > 0) {
-                    const column = document.createElement('div');
-                    column.className = "bracket-column";
-                    column.innerHTML = `<h3 class="text-center font-black text-[10px] bg-slate-900 text-white py-2 rounded-xl mb-4 italic">${phase}</h3>`;
-                    matches.forEach(m => {
-                        const box = document.createElement('div');
-                        box.className = `match-box ${state.idx + 1 === m.p ? 'active-match' : ''}`;
-                        box.innerHTML = `<div class="match-atlet sudut-merah-bg"><span class="atlet-name">${m.m || '?'}</span></div><div class="match-atlet sudut-biru-bg"><span class="atlet-name">${m.b || '?'}</span></div>`;
-                        column.appendChild(box);
-                    });
-                    container.appendChild(column);
-                }
-            });
-        };
-
-        window.timerCtrl = (cmd) => {
-            if(cmd === 'start') {
-                if(!state.isRunning) {
-                    state.isRunning = true;
-                    // Dewan yang menjalankan timer akan melakukan update periodik ke DB
-                    tInt = setInterval(() => {
-                        if(state.timer > 0) {
-                            state.timer--;
-                            // Update timer path khusus agar tidak mengganggu penulisan juri
-                            update(ref(db, 'pencak_state'), { timer: state.timer });
-                        } else {
-                            window.timerCtrl('stop');
-                        }
-                    }, 1000);
-                    window.broadcast();
-                }
-            } else if(cmd === 'stop') {
-                state.isRunning = false;
-                clearInterval(tInt);
-                window.broadcast();
-            } else if(cmd === 'reset') {
-                state.timer = state.matches[state.idx].duration || 120;
-                state.isRunning = false;
-                clearInterval(tInt);
-                window.broadcast();
-            }
-        };
-
-        window.setRound = (n) => { state.babak = n; state.timer = state.matches[state.idx].duration || 120; state.isRunning = false; clearInterval(tInt); window.broadcast(); };
-        window.selectMatchPrompt = () => { let p = prompt("Partai:"); if(p) { state.idx = parseInt(p)-1; state.timer = state.matches[state.idx].duration; window.broadcast(); } };
-        window.openSelesaiModal = () => { document.getElementById('modal-confirm').style.display = 'flex'; };
-        window.confirmSelesai = (ans) => {
-            if(ans) {
-                const tm = calculateTotal('merah'), tb = calculateTotal('biru'), m = state.matches[state.idx];
-                const wSudut = tm > tb ? 'MERAH' : tb > tm ? 'BIRU' : 'DRAW';
-                document.getElementById('win-nama').innerText = wSudut === 'MERAH' ? m.m : m.b;
-                document.getElementById('winner-notif').style.display = 'flex';
-            }
-            document.getElementById('modal-confirm').style.display = 'none';
-        };
-        window.closeWinnerNotif = () => { document.getElementById('winner-notif').style.display = 'none'; state.merah = INITIAL_STATE.merah; state.biru = INITIAL_STATE.biru; window.broadcast(); };
-        window.nextMatchConfirm = () => { state.idx++; state.timer = state.matches[state.idx].duration; window.broadcast(); };
-
-        window.applyPenalty = (s, p) => {
+        function nextMatchConfirm() { if(state.idx < 999) { if(confirm("Lanjut Ke Partai Selanjutnya?")) { state.idx++; const m = state.matches[state.idx]; state.timer = m.duration || 120; state.babak = 1; broadcast(); } } }
+        
+        function applyPenalty(s, p) {
+            const map = { teguran1: 1, teguran2: 2, peringatan1: 5, peringatan2: 10, binaan1: 0, binaan2: 0 };
+            if(!state[s].penHistory) state[s].penHistory = [];
             const idx = state[s].penHistory.findIndex(x => x.type === p && x.round === state.babak);
-            if(idx > -1) state[s].penHistory.splice(idx, 1);
-            else state[s].penHistory.push({ type: p, round: state.babak });
-            window.broadcast();
-        };
+            if(idx > -1) { state[s].penHistory.splice(idx, 1); } 
+            else { state[s].penHistory.push({ type: p, round: state.babak }); }
+            broadcast();
+        }
 
-        window.addJatuhan = (s) => { state[s].jat += 3; window.broadcast(); };
-        window.setDis = (s) => { state[s].dis = true; window.broadcast(); };
-        window.initJuri = (n) => { localJuri = n; document.getElementById('modal-jr-partai').innerText = state.matches[state.idx].p; document.getElementById('modal-juri-identity').style.display = 'flex'; };
-        window.submitJuriIdentity = () => { state.juriNames['j'+localJuri] = document.getElementById('input-juri-name-modal').value; document.getElementById('modal-juri-identity').style.display = 'none'; window.changeScreen('juri'); window.broadcast(); };
+        function addJatuhan(s) { state[s].jat += 3; broadcast(); }
+        function setDis(s) { state[s].dis = true; broadcast(); }
 
-        window.sendHitDirect = (sudut, val) => {
-            if(!state.isRunning) return;
-            document.getElementById('snd-hit').play();
-            // Fetch state terbaru sebelum update juri untuk mencegah desync timer
-            onValue(stateRef, (snap) => {
-                const cur = snap.val();
-                state[sudut].juri['j'+localJuri][state.babak-1] += val;
-                state[sudut].history['j'+localJuri].push(val);
-                // Update specific path juri saja agar timer tetap berjalan lancar
-                const updates = {};
-                updates[`/merah/juri`] = state.merah.juri;
-                updates[`/biru/juri`] = state.biru.juri;
-                updates[`/merah/history`] = state.merah.history;
-                updates[`/biru/history`] = state.biru.history;
-                update(stateRef, updates);
-            }, { onlyOnce: true });
-        };
+        function initJuri(n) { 
+            localJuri = n; 
+            const m = state.matches[state.idx];
+            document.getElementById('modal-jr-title').innerText = "Identitas Juri " + n;
+            document.getElementById('modal-jr-partai').innerText = m.p;
+            document.getElementById('modal-jr-m-nama').innerText = m.m || "MERAH";
+            document.getElementById('modal-jr-m-kont').innerText = m.km || "KONTINGEN";
+            document.getElementById('modal-jr-b-nama').innerText = m.b || "BIRU";
+            document.getElementById('modal-jr-b-kont').innerText = m.kb || "KONTINGEN";
+            document.getElementById('input-juri-name-modal').value = (state.juriNames['j'+n] !== "---") ? state.juriNames['j'+n] : "";
+            document.getElementById('modal-juri-identity').style.display = 'flex';
+        }
 
-        window.initiateVar = (type) => { state.var = { active: true, type: type, res: {} }; window.broadcast(); document.getElementById('modal-var-setup').style.display = 'none'; };
-        window.voteVar = (v) => { state.var.res['j'+localJuri] = v; window.broadcast(); };
-        window.closeVar = () => { state.var.active = false; window.broadcast(); };
+        function submitJuriIdentity() {
+            const nameInput = document.getElementById('input-juri-name-modal').value.trim();
+            if(!nameInput) { alert("Silahkan masukkan nama juri terlebih dahulu."); return; }
+            state.juriNames['j'+localJuri] = nameInput;
+            document.getElementById('modal-juri-identity').style.display = 'none';
+            broadcast();
+            changeScreen('juri');
+        }
 
+        function sendHitDirect(sudut, val) { if(!state.isRunning) return; document.getElementById('snd-hit').play(); state[sudut].juri['j'+localJuri][state.babak-1] += val; state[sudut].history['j'+localJuri].push(val); broadcast(); }
+        function initiateVar(type) { state.var = { active: true, type: type, res: {} }; document.getElementById('modal-var-setup').style.none; broadcast(); }
+        function voteVar(v) { state.var.res['j'+localJuri] = v; broadcast(); }
+        function closeVar() { state.var.active = false; state.var.res = {}; broadcast(); }
+        
         function calculateTotal(s) {
             const sc = state[s];
-            if(sc.dis) return "DSQ";
-            const tj = sc.juri.j1.reduce((a,b)=>a+b,0) + sc.juri.j2.reduce((a,b)=>a+b,0) + sc.juri.j3.reduce((a,b)=>a+b,0);
-            const map = { teguran1: 1, teguran2: 2, peringatan1: 5, peringatan2: 10 };
-            let tp = 0; sc.penHistory.forEach(x => tp += (map[x.type] || 0));
-            return tj + sc.jat - tp;
+            if(sc.dis) return "DISKUALIFIKASI!!!";
+            const totalJuri = sc.juri.j1.reduce((a,b)=>a+b,0) + sc.juri.j2.reduce((a,b)=>a+b,0) + sc.juri.j3.reduce((a,b)=>a+b,0);
+            const map = { teguran1: 1, teguran2: 2, peringatan1: 5, peringatan2: 10, binaan1: 0, binaan2: 0 };
+            let totalPen = 0;
+            if(sc.penHistory) { sc.penHistory.forEach(item => { totalPen += map[item.type] || 0; }); }
+            return totalJuri + sc.jat - totalPen;
         }
-
-        function updateUI() {
-            const m = state.matches[state.idx];
-            const tStr = (s) => { const min = Math.floor(s/60); const sec = s % 60; return `${min.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`; };
-            
-            document.querySelectorAll('[id$="-timer-disp"], #mon-timer').forEach(el => el.innerText = tStr(state.timer));
-            document.querySelectorAll('[id$="-babak-disp"], #mon-babak').forEach(el => el.innerText = "BABAK " + state.babak);
-            
-            const tm = calculateTotal('merah'), tb = calculateTotal('biru');
-            document.getElementById('dw-total-m').innerText = tm; document.getElementById('dw-total-b').innerText = tb;
-            if(document.getElementById('mon-total-m')) {
-                document.getElementById('mon-total-m').innerText = tm;
-                document.getElementById('mon-total-b').innerText = tb;
-            }
-
-            document.getElementById('dw-m-nama').innerText = m.m || "MERAH";
-            document.getElementById('dw-b-nama').innerText = m.b || "BIRU";
-            
-            if(localJuri) {
-                document.getElementById('jr-role-name').innerText = state.juriNames['j'+localJuri] + " (JURI " + localJuri + ")";
-                document.getElementById('jr-match-no').innerText = m.p;
-                document.getElementById('jr-m-nama-full').innerText = m.m; document.getElementById('jr-b-nama-full').innerText = m.b;
-                document.getElementById('jr-history-m').innerText = state.merah.history['j'+localJuri].join(", ");
-                document.getElementById('jr-history-b').innerText = state.biru.history['j'+localJuri].join(", ");
-            }
-
-            // Real-time Table
-            const renderTable = (id) => {
-                const el = document.getElementById(id); if(!el) return;
-                el.innerHTML = `
-                    <tr class="sudut-merah-bg"><td class="text-left px-2 font-bold">${m.m || 'MERAH'}</td><td>${state.merah.juri.j1[0]}</td><td>${state.merah.juri.j1[1]}</td><td>${state.merah.juri.j1[2]}</td><td>${state.merah.juri.j2[0]}</td><td>${state.merah.juri.j2[1]}</td><td>${state.merah.juri.j2[2]}</td><td>${state.merah.juri.j3[0]}</td><td>${state.merah.juri.j3[1]}</td><td>${state.merah.juri.j3[2]}</td><td class="bg-white text-red-600 font-black">${tm}</td></tr>
-                    <tr class="sudut-biru-bg"><td class="text-left px-2 font-bold">${m.b || 'BIRU'}</td><td>${state.biru.juri.j1[0]}</td><td>${state.biru.juri.j1[1]}</td><td>${state.biru.juri.j1[2]}</td><td>${state.biru.juri.j2[0]}</td><td>${state.biru.juri.j2[1]}</td><td>${state.biru.juri.j2[2]}</td><td>${state.biru.juri.j3[0]}</td><td>${state.biru.juri.j3[1]}</td><td>${state.biru.juri.j3[2]}</td><td class="bg-white text-blue-600 font-black">${tb}</td></tr>`;
-            };
-            renderTable('dw-rt-table'); renderTable('mon-rt-table');
-
-            // Penalty Highlighting
-            ['merah','biru'].forEach(s => {
-                const prefix = s === 'merah' ? 'm-' : 'b-';
-                ['b1','b2','t1','t2','p1','p2'].forEach(k => {
-                    const el = document.getElementById(prefix+k);
-                    if(el) {
-                        const typeMap = {b1:'binaan1',b2:'binaan2',t1:'teguran1',t2:'teguran2',p1:'peringatan1',p2:'peringatan2'};
-                        const active = state[s].penHistory.some(x => x.type === typeMap[k] && x.round === state.babak);
-                        active ? el.classList.add('active-feature') : el.classList.remove('active-feature');
-                    }
-                });
-            });
-
-            // VAR Overlay
-            if(state.var.active) {
-                if(localJuri) {
-                    document.getElementById('var-overlay').style.display = 'flex';
-                } else {
-                    document.getElementById('dw-var-popup').style.display = 'flex';
-                    let circles = "";
-                    ['j1','j2','j3'].forEach(j => {
-                        const r = state.var.res[j];
-                        const col = r==='MERAH' ? 'bg-red-600' : r==='BIRU' ? 'bg-blue-600' : r==='TIDAK SAH' ? 'bg-yellow-500' : 'bg-gray-400';
-                        circles += `<div class="var-circle ${col}">${j[1]}</div>`;
-                    });
-                    document.getElementById('dw-var-circles').innerHTML = circles;
-                }
-            } else {
-                document.getElementById('var-overlay').style.display = 'none';
-                document.getElementById('dw-var-popup').style.display = 'none';
-            }
-        }
-
-        window.resetData = () => { if(confirm("Reset seluruh data ke awal?")) set(stateRef, INITIAL_STATE); };
 
         setInterval(() => {
             const now = new Date();
-            if(document.getElementById('mon-realtime-clock')) {
-                document.getElementById('mon-realtime-date').innerText = now.toLocaleDateString();
-                document.getElementById('mon-realtime-clock').innerText = now.toLocaleTimeString();
-            }
+            const dateStr = `${now.getDate()}/${now.getMonth()+1}/${now.getFullYear()}`;
+            const clockStr = now.getHours().toString().padStart(2, '0') + ":" + now.getMinutes().toString().padStart(2, '0') + ":" + now.getSeconds().toString().padStart(2, '0');
+            if(document.getElementById('mon-realtime-date')) document.getElementById('mon-realtime-date').innerText = dateStr;
+            if(document.getElementById('mon-realtime-clock')) document.getElementById('mon-realtime-clock').innerText = clockStr;
         }, 1000);
 
+        function updateUI() {
+            const m = state.matches[state.idx] || {m:"MERAH", b:"BIRU", p:"--", km:"", kb:"", cat:"DINI", kelas:"A", gender:"PUTRA", fase:"PENYISIHAN", rounds: 3, duration: 120};
+            const tStr = (s) => { const min = Math.floor(s/60); const sec = s % 60; return `${min.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`; };
+            
+            const matchFullInfo = `PARTAI ${m.p} / ${m.kelas} ${m.cat} ${m.gender} / ${m.fase}`;
+            
+            document.querySelectorAll('[id$="-timer-disp"], #mon-timer').forEach(el => el.innerText = tStr(state.timer));
+            document.querySelectorAll('[id$="-babak-disp"], #mon-babak').forEach(el => el.innerText = "BABAK " + state.babak);
+            const tm = calculateTotal('merah'), tb = calculateTotal('biru');
+            const updateBox = (id, val, cls) => { const el = document.getElementById(id); if(el) { el.innerText = val; el.className = (val==="DISKUALIFIKASI!!!")?"text-[10px] font-black py-2":cls; } };
+            
+            updateBox('dw-total-m', tm, "text-3xl font-black"); updateBox('dw-total-b', tb, "text-3xl font-black");
+            updateBox('mon-total-m', tm, "text-8xl font-black"); updateBox('mon-total-b', tb, "text-8xl font-black");
+            
+            if(document.getElementById('dw-match-info')) document.getElementById('dw-match-info').innerText = matchFullInfo;
+            if(document.getElementById('mon-match')) document.getElementById('mon-match').innerText = matchFullInfo;
+            
+            if(document.getElementById('mon-m-nama')) document.getElementById('mon-m-nama').innerText = m.m || "MERAH";
+            if(document.getElementById('mon-m-kont')) document.getElementById('mon-m-kont').innerText = m.km || "KONTINGEN";
+            if(document.getElementById('mon-b-nama')) document.getElementById('mon-b-nama').innerText = m.b || "BIRU";
+            if(document.getElementById('mon-b-kont')) document.getElementById('mon-b-kont').innerText = m.kb || "KONTINGEN";
+
+            document.getElementById('dw-m-nama').innerText = m.m || "MERAH"; document.getElementById('dw-m-kont').innerText = m.km || "KONTINGEN";
+            document.getElementById('dw-b-nama').innerText = m.b || "BIRU"; document.getElementById('dw-b-kont').innerText = m.kb || "KONTINGEN";
+            ['j1','j2','j3'].forEach(j => { if(document.getElementById('dw-name-'+j)) document.getElementById('dw-name-'+j).innerText = state.juriNames[j]; });
+            
+            if(localJuri) {
+                document.getElementById('jr-role-name').innerText = state.juriNames['j'+localJuri] + " (JURI " + localJuri + ")";
+                document.getElementById('jr-match-no').innerText = m.p; document.getElementById('jr-m-nama-full').innerText = m.m;
+                document.getElementById('jr-b-nama-full').innerText = m.b; document.getElementById('jr-m-kont-full').innerText = m.km;
+                document.getElementById('jr-b-kont-full').innerText = m.kb; document.getElementById('jr-history-m').innerText = state.merah.history['j'+localJuri].join(", ");
+                document.getElementById('jr-history-b').innerText = state.biru.history['j'+localJuri].join(", ");
+            }
+
+            const labelMerah = `${m.m || 'MERAH'} (${m.km || 'KONTINGEN'})`;
+            const labelBiru = `${m.b || 'BIRU'} (${m.kb || 'KONTINGEN'})`;
+            
+            const renderTableContent = (id) => {
+                const el = document.getElementById(id); if(!el) return;
+                el.innerHTML = `
+                    <tr class="sudut-merah-bg"><td class="text-left px-2 font-bold">${labelMerah}</td><td>${state.merah.juri.j1[0]}</td><td>${state.merah.juri.j1[1]}</td><td>${state.merah.juri.j1[2]}</td><td>${state.merah.juri.j2[0]}</td><td>${state.merah.juri.j2[1]}</td><td>${state.merah.juri.j2[2]}</td><td>${state.merah.juri.j3[0]}</td><td>${state.merah.juri.j3[1]}</td><td>${state.merah.juri.j3[2]}</td><td class="bg-white text-red-600 font-black">${tm}</td></tr>
+                    <tr class="sudut-biru-bg"><td class="text-left px-2 font-bold">${labelBiru}</td><td>${state.biru.juri.j1[0]}</td><td>${state.biru.juri.j1[1]}</td><td>${state.biru.juri.j1[2]}</td><td>${state.biru.juri.j2[0]}</td><td>${state.biru.juri.j2[1]}</td><td>${state.biru.juri.j2[2]}</td><td>${state.biru.juri.j3[0]}</td><td>${state.biru.juri.j3[1]}</td><td>${state.biru.juri.j3[2]}</td><td class="bg-white text-blue-600 font-black">${tb}</td></tr>`;
+            };
+            renderTableContent('dw-rt-table'); renderTableContent('mon-rt-table');
+
+            ['merah','biru'].forEach(s => { 
+                const pr = s[0]; 
+                ['b1','b2', 't1','t2','p1','p2'].forEach(k => { 
+                    const el = document.getElementById(pr+'-'+k); if(!el) return;
+                    const typeMap = { b1:'binaan1', b2:'binaan2', t1:'teguran1', t2:'teguran2', p1:'peringatan1', p2:'peringatan2' };
+                    const key = typeMap[k];
+                    const isActiveInRound = state[s].penHistory ? state[s].penHistory.some(x => x.type === key && x.round === state.babak) : false;
+                    isActiveInRound ? el.classList.add('active-feature') : el.classList.remove('active-feature'); 
+                }); 
+            });
+            
+            const getPen = (s) => { 
+                if(!state[s].penHistory) return "-";
+                const mapDisp = { teguran1:'T1', teguran2:'T2', peringatan1:'P1', peringatan2:'P2', binaan1:'B1', binaan2:'B2' };
+                let arr = state[s].penHistory.map(item => `${mapDisp[item.type]}(B${item.round})`);
+                return arr.length > 0 ? arr.join(", ") : "-"; 
+            };
+            document.querySelectorAll('[id$="-pen-labels-m"], #mon-pen-m').forEach(el => el.innerText = getPen('merah'));
+            document.querySelectorAll('[id$="-pen-labels-b"], #mon-pen-b').forEach(el => el.innerText = getPen('biru'));
+            
+            const vo = document.getElementById('var-overlay'), dwPop = document.getElementById('dw-var-popup');
+            if(state.var.active) {
+                if(localJuri) { if(vo) vo.style.display = 'flex'; if(document.getElementById('var-title')) document.getElementById('var-title').innerText = "VAR: " + state.var.type; }
+                else { if(dwPop) dwPop.style.display = 'flex'; if(document.getElementById('dw-var-type-label')) document.getElementById('dw-var-type-label').innerText = "VAR: " + state.var.type; let c = ""; ['j1','j2','j3'].forEach(j => { const r = state.var.res[j]; let col = r==='MERAH'?'bg-red-600':r==='BIRU'?'bg-blue-600':r==='TIDAK SAH'?'bg-yellow-500':'bg-gray-300'; c += `<div class="var-circle ${col}">${j[1]}</div>`; }); if(document.getElementById('dw-var-circles')) document.getElementById('dw-var-circles').innerHTML = c; }
+            } else { if(vo) vo.style.display = 'none'; if(dwPop) dwPop.style.display = 'none'; }
+            
+            for(let i=1; i<=3; i++) { const b = document.getElementById('dw-btn-b'+i); if(b) { b.style.display = i <= m.rounds ? "block" : "none"; b.className = (state.babak === i) ? "text-[6px] px-2 py-1 rounded bg-slate-900 text-white font-bold uppercase" : "text-[6px] px-2 py-1 rounded bg-slate-200 font-bold uppercase"; } }
+        }
+
+        updateUI();
+        function resetData() { if(confirm("Reset semua data dan riwayat?")) { localStorage.clear(); location.reload(); } }
     </script>
 </body>
 </html>
